@@ -8,8 +8,8 @@ extern fatal
 ; << [0x0000:0x8000] -> loaded bootstrap 
 bootstrap_loader_start:
     xor         ax, ax
-    mov         ds, ax          ; ZAISTÍME, ŽE DS JE STOPROCENTNĚ 0!
-    mov         es, ax          ; Pro jistotu i ES
+    mov         ds, ax
+    mov         es, ax
 
     mov         si, DISK_ADDRESS_PACKET
     mov         ah, READ_DISK
@@ -17,6 +17,7 @@ bootstrap_loader_start:
 
     mov         si, BOOTSTRAP_LOAD_ERROR
     jc          fatal
+    
     jmp         bootstrap_loader_finish
 
 

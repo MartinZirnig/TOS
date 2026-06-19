@@ -1,5 +1,5 @@
 #include "bootstrap.h"
-#include "VGA.h"
+#include "VGA/VGA.h"
 
 str uint64ToString(uint64 value)
 {
@@ -30,6 +30,7 @@ void print(char* message) {
     VGA_SetForegroundColor(VGA_COLOR_WHITE);
     VGA_Write(message);
     VGA_NewLine();
+    DEBUG_WriteLine(message);
 
     sleep(50);
 }
@@ -40,6 +41,8 @@ void printError(char* message) {
     VGA_Write(message);
     VGA_SetForegroundColor(VGA_COLOR_WHITE);
     VGA_NewLine();
+    DEBUG_WriteStr("Error: ");
+    DEBUG_WriteLine(message);
 
     sleep(500);
 }
@@ -50,7 +53,8 @@ void printSuccess(char* message) {
     VGA_Write(message);
     VGA_SetForegroundColor(VGA_COLOR_WHITE);
     VGA_NewLine();
-
+    DEBUG_WriteStr("Success: ");
+    DEBUG_WriteLine(message);
     sleep(500);
 }
 
@@ -59,7 +63,9 @@ void printInfo(char* message) {
     VGA_Write("Info: ");
     VGA_Write(message);
     VGA_SetForegroundColor(VGA_COLOR_WHITE);
-    VGA_NewLine();
+    VGA_NewLine();    
+    DEBUG_WriteStr("Info: ");
+    DEBUG_WriteLine(message);
     
     sleep(500);
 }

@@ -1,0 +1,18 @@
+# =====================================================================
+# GDB SCRIPT - LADĚNÍ ČISTĚ 64-BIT KERNELU
+# =====================================================================
+set architecture i386:x86-64
+
+target remote localhost:1234
+
+add-symbol-file build/kernel.elf 0xffffffff80100000
+
+
+hb *0xffffffff80100000
+
+hb *(0xffffffff80100000 + 0x18)
+
+echo \n=== GDB připraveno v 64-bit režimu ===\n
+echo Čekám na zavedení kernelu do paměti...\n
+
+continue

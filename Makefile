@@ -1,18 +1,17 @@
+MAKEFLAGS += --no-print-directory
+
 CC = gcc
 ASM = nasm
 LD = ld
 
+DUMP = dump
 BUILD = build
 DISK = $(BUILD)/os_disk.img
 
 INCLUDE_DIRS = \
     src/shared \
-    src/shared/HW_IO \
-    src/shared/String \
-    src/shared/Memory \
-    src/shared/VGA \
-    src/shared/Paging \
     src/shared/Math \
+    src/shared/Paging \
     src/shared/Context
 
 INCLUDES = $(addprefix -I,$(INCLUDE_DIRS))
@@ -22,17 +21,16 @@ INCLUDES = $(addprefix -I,$(INCLUDE_DIRS))
 # ---------------------------------------------------------------------
 
 # Společný základ pro C kompilátor (freestanding OS vývoj)
-CFLAGS_BASE = -ffreestanding -nostdinc -fno-pie -fno-stack-protector -nostdlib $(INCLUDES)
+CFLAGS_BASE = -ffreestanding -nostdinc -fno-pic -fno-pie -fno-stack-protector -nostdlib -mno-red-zone -mno-mmx -mno-80387 $(INCLUDES)
 
 # 32-bit (Bootstrap) flagy
 CFLAGS_32  = -m32 $(CFLAGS_BASE)
 ASMFLAGS_32 = -f elf32
-LDFLAGS_32  = -m elf_i386 --no-warn-rwx-segments --oformat binary
+LDFLAGS_32  = -m elf_i386 --no-warn-rwx-segments --oformat binary -Map=$(BUILD)/bootstrap.map
 
-# 64-bit (Kernel) flagy
-CFLAGS_64  = -m64 -mcmodel=kernel -mno-red-zone $(CFLAGS_BASE)
-ASMFLAGS_64 = -f elf64
-LDFLAGS_64  = -m elf_x86_64 --no-warn-rwx-segments --oformat binary
+CFLAGS_64 = -m64 -mcmodel=kernel -fno-plt -g3 -O0 $(CFLAGS_BASE)
+ASMFLAGS_64 = -f elf64 -g -F dwarf
+LDFLAGS_64  = -m elf_x86_64 --no-warn-rwx-segments -z noexecstack -Map=$(BUILD)/kernel.map
 
 
 # ---------------------------------------------------------------------
@@ -61,8 +59,15 @@ BOOTSTRAP_OBJS     = $(BOOTSTRAP_ENTRY) $(filter-out $(BOOTSTRAP_ENTRY),$(BOOTST
 # Objekty Kernelu (vše v src/kernel/ kompilujeme jako 64-bit)
 KERNEL_C_SRCS   = $(shell find src/kernel -name "*.c")
 KERNEL_ASM_SRCS = $(shell find src/kernel -name "*.asm")
-KERNEL_OBJS     = $(patsubst src/%.c,$(BUILD)/%__c.o,$(KERNEL_C_SRCS)) \
+
+# !!! POZOR: Zde případně uprav název souboru podle tvé reálné struktury !!!
+KERNEL_ENTRY    = $(BUILD)/kernel/kernel__asm.o
+
+KERNEL_REST     = $(patsubst src/%.c,$(BUILD)/%__c.o,$(KERNEL_C_SRCS)) \
                   $(patsubst src/%.asm,$(BUILD)/%__asm.o,$(KERNEL_ASM_SRCS))
+
+# Složíme objekty tak, aby vstupní bod kernelu byl VŽDY na prvním místě!
+KERNEL_OBJS     = $(KERNEL_ENTRY) $(filter-out $(KERNEL_ENTRY),$(KERNEL_REST))
 
 # Objekty Shared (Adresář src/shared/ se zkompiluje 2x - jednou pro 32b, jednou pro 64b)
 SHARED_C_SRCS   = $(shell find src/shared -name "*.c")
@@ -75,7 +80,7 @@ SHARED_OBJS_64  = $(patsubst src/%.c,$(BUILD)/%__c_64.o,$(SHARED_C_SRCS)) \
                   $(patsubst src/%.asm,$(BUILD)/%__asm_64.o,$(SHARED_ASM_SRCS))
 
 
-.PHONY: all clean run env-init env-fill docker-build docker-run build run-kill
+.PHONY: all clean run env-init env-fill docker-build docker-run build run-kill gdb dump dump-clean
 
 # Hlavní cíl sestaví všechny 3 binárky
 all: $(BUILD)/bootloader.bin $(BUILD)/bootstrap.bin $(BUILD)/kernel.bin
@@ -150,15 +155,26 @@ $(BUILD)/bootstrap.bin: $(BOOTSTRAP_OBJS) $(SHARED_OBJS_32)
 	@echo "=================================================="
 	@$(LD) $(LDFLAGS_32) -T linker/bootstrap.ld -o $@ $^
 
-# 3) STAGE 3: Kernel (Linkujeme 64-bitové objekty + 64-bit shared)
+# 3) STAGE 3: Kernel (Nejprve sestavíme ELF64 a z něj vytáhneme čistou binárku přes objcopy)
 $(BUILD)/kernel.bin: $(KERNEL_OBJS) $(SHARED_OBJS_64)
 	@mkdir -p $(BUILD)
 	@echo ""
 	@echo "=================================================="
-	@echo "   LINKING STAGE 3: Kernel (0x0) [64-bit]"
+	@echo "   LINKING STAGE 3: Kernel (ELF64)"
 	@echo "=================================================="
-	@$(LD) $(LDFLAGS_64) -T linker/kernel.ld -o $@ $^
+	@$(LD) $(LDFLAGS_64) -T linker/kernel.ld -o $(BUILD)/kernel.elf $^
+	@echo "   EXTRACTING BINARY FROM ELF"
+	@objcopy -O binary $(BUILD)/kernel.elf $@
 
+dump:
+	@mkdir -p $(DUMP)
+	@objdump -d -M intel,intel-mnemonic $(BUILD)/kernel.elf > $(DUMP)/kernel_elf.txt
+	@objdump -D -M intel,intel-mnemonic -b binary -m i386:x86-64 $(BUILD)/kernel.bin > $(DUMP)/kernel.txt
+	@objdump -D -M intel,intel-mnemonic -b binary -m i386 $(BUILD)/bootstrap.bin > $(DUMP)/bootstrap.txt
+	@objdump -D -M intel,intel-mnemonic -b binary -m i386 $(BUILD)/bootloader.bin > $(DUMP)/bootloader.txt
+
+dump-clean:
+	@rm -rf $(DUMP)
 
 # ---------------------------------------------------------------------
 # Disk Environment Management & QEMU
@@ -176,12 +192,24 @@ env-fill: all
 	@echo "=================================================="
 	@echo "   FLASHING BINARIES TO DISK IMAGE"
 	@echo "=================================================="
+	@if [ ! -f "$(BUILD)/bootstrap.bin" ]; then echo "ERROR: bootstrap.bin missing!"; exit 1; fi
+	@BOOTSTRAP_SIZE=$$(stat -c%s "$(BUILD)/bootstrap.bin"); \
+	if [ "$$BOOTSTRAP_SIZE" -gt 32256 ]; then \
+		echo "ERROR: bootstrap.bin is too large ($$BOOTSTRAP_SIZE bytes). Max size is 32256 bytes (63 sectors)."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(BUILD)/kernel.bin" ]; then echo "ERROR: kernel.bin missing! Sestavení ELF64 nebo objcopy selhalo."; exit 1; fi
+	@KERNEL_SIZE=$$(stat -c%s "$(BUILD)/kernel.bin"); \
+	if [ "$$KERNEL_SIZE" -gt 2097152 ]; then \
+		echo "ERROR: kernel.bin is too large ($$KERNEL_SIZE bytes). Max size is 2MB (1 HugePage)."; \
+		exit 1; \
+	fi
 	@echo "-> Writing Bootloader to sector 0..."
 	@dd if=$(BUILD)/bootloader.bin of=$(DISK) bs=512 count=1 conv=notrunc 2>/dev/null
-	@echo "-> Writing Bootstrap to sector 1..."
+	@echo "-> Writing Bootstrap to sector 1 (max 63 sectors)..."
 	@dd if=$(BUILD)/bootstrap.bin of=$(DISK) bs=512 seek=1 conv=notrunc 2>/dev/null
-	@echo "-> Writing Kernel to offset 1GB..."
-	@dd if=$(BUILD)/kernel.bin of=$(DISK) bs=1M seek=1024 conv=notrunc 2>/dev/null
+	@echo "-> Writing Kernel to sector 64 (aligned to HugePage)..."
+	@dd if=$(BUILD)/kernel.bin of=$(DISK) bs=512 seek=64 conv=notrunc 2>/dev/null
 	@echo "Done! Disk image is ready to boot."
 
 run:
@@ -190,10 +218,12 @@ run:
 			-drive format=raw,file=$(DISK) \
 			-m 4G \
 			-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+			-debugcon file:debug.log \
 			-d int,cpu_reset \
 			-D qemu.log \
 			-no-reboot \
-			-no-shutdown
+			-no-shutdown \
+			-s -S
 
 run-kill:
 	@echo "Launching QEMU..."
@@ -201,16 +231,49 @@ run-kill:
 			-drive format=raw,file=$(DISK) \
 			-m 4G \
 			-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+			-debugcon file:debug.log \
 			-d int,cpu_reset \
 			-D qemu.log \
-			-no-reboot
-			
-	@echo Exit code: $?.
+			-no-reboot \
+			-s -S
+	@tac qemu.log | head -n 1
+	@tac debug.log | head -n 1
+
+run-alone:
+	@echo "Launching QEMU..."
+	@qemu-system-x86_64 \
+			-drive format=raw,file=$(DISK) \
+			-m 4G \
+			-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+			-debugcon file:debug.log \
+			-d int,cpu_reset \
+			-D qemu.log \
+			-no-reboot 
+	@tac qemu.log | head -n 1
+	@tac debug.log | head -n 1
+
+run-monitor:
+	@echo "Launching QEMU..."
+	@qemu-system-x86_64 \
+			-drive format=raw,file=$(DISK) \
+			-m 4G \
+			-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+			-debugcon file:debug.log \
+			-d int,cpu_reset \
+			-D qemu.log \
+			-no-reboot  \
+			-monitor stdio
+	@tac qemu.log | head -n 1
+	@tac debug.log | head -n 1
+
+gdb:
+	@gdb-multiarch -x gdb/gdb_init.script
 
 clean:
 	@echo "Cleaning up build directory..."
 	@rm -rf $(BUILD)
 	@rm qemu.log -rf
+	@rm debug.log -rf
 
 docker-build:
 	@docker build -t my-os-dev docker/
@@ -218,9 +281,11 @@ docker-build:
 docker-run:
 	@docker run -it --user $(shell id -u):$(shell id -g) -v $(PWD):/os my-os-dev
 
-build:
+build: 
 	@clear
 	@make clean
+	@make dump-clean
 	@make all
+	@make dump
 	@make env-init
 	@make env-fill

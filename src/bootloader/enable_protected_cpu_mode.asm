@@ -3,8 +3,6 @@
 %include "src/bootloader/_constants.inc"
 
 extern fatal
-global enable_protected_cpu_mode_start
-global enable_protected_cpu_mode_finish
 
 %define KERNEL_CODE_ACCESS (GDT_ACCESS_PRESENT | GDT_ACCESS_DESCRIPTOR_TYPE | GDT_ACCESS_EXECUTABLE | GDT_ACCESS_READ_WRITE)
 %define KERNEL_DATA_ACCESS (GDT_ACCESS_PRESENT | GDT_ACCESS_DESCRIPTOR_TYPE | GDT_ACCESS_READ_WRITE)
@@ -13,8 +11,6 @@ global enable_protected_cpu_mode_finish
 ; >> void
 ; << void
 enable_protected_cpu_mode_start:
-    cli
-    
     lgdt            [GDT_DESCRIPTOR]
 
     ; cr0 zero bit indicates protected mode

@@ -1,7 +1,7 @@
 #include "bootstrap.h"
-#include "HW_IO.h"
+#include "allocator_impl.h"
 
-#define BUFFER_SIZE     0xFFF
+#define BUFFER_SIZE     0x1FFF
 #define NORMAL_PAGE_SIZE       0x20
 
 static volatile byte buffer[BUFFER_SIZE];

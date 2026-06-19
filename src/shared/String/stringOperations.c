@@ -1,8 +1,8 @@
 #include "stringOperations.h"
-#include "string.h"
-#include "memory.h"
+#include "./../Memory/memory.h"
 
-static inline uint32 _str_len(const str text) {
+
+static inline uint32 _str_len(const char* text) {
     uint32 len = 0;
     while (text[len] != '\0') {
         len++;
@@ -11,29 +11,29 @@ static inline uint32 _str_len(const str text) {
 }
 
 
-uint32 str_len(str text) {
+uint32 str_len(char* text) {
     if (!text) return 0;
     return _str_len(text);
 }
 
-str str_copy(str text) {
+char* str_copy(char* text) {
     if (!text) return null;
     
     uint32 len = _str_len(text);
-    str duplicate = (str)malloc(len + 1);
+    char* duplicate = (char*)malloc(len + 1);
     if (!duplicate) return null;
     
     copy(text, duplicate, len + 1);
     return duplicate;
 }
 
-str str_concat(str first, str next) {
+char* str_concat(char* first, char* next) {
     if (!first || !next) return null;
     
     uint32 len1 = _str_len(first);
     uint32 len2 = _str_len(next);
     
-    str result = (str)malloc(len1 + len2 + 1);
+    char* result = (char*)malloc(len1 + len2 + 1);
     if (result == null) return null;
     
     copy(first, result, len1);
@@ -42,17 +42,17 @@ str str_concat(str first, str next) {
     return result;
 }
 
-str str_slice(str text, uint32 start, uint32 len) {
+char* str_slice(char* text, uint32 start, uint32 len) {
     if (!text) return null;
     
-    uint32 total_len = _str_len(text);
+    uint32 total_len = str_len(text);
     if (start >= total_len) return null;
     
     if (start + len > total_len) {
         len = total_len - start;
     }
     
-    str slice = (str)malloc(len + 1);
+    char* slice = (char*)malloc(len + 1);
     if (slice == null) return null;
     
     copy(text + start, slice, len);
@@ -61,11 +61,11 @@ str str_slice(str text, uint32 start, uint32 len) {
     return slice;
 }
 
-str str_replaceC(str text, char value, char replacement) {
+char* str_replaceC(char* text, char value, char replacement) {
     if (!text) return null;
     
-    uint32 len = _str_len(text);
-    str result = (str)malloc(len + 1);
+    uint32 len = str_len(text);
+    char* result = (char*)malloc(len + 1);
     if (result == null) return null;
     
     for (uint32 i = 0; i < len; i++) {
@@ -80,7 +80,7 @@ str str_replaceC(str text, char value, char replacement) {
     return result;
 }
 
-str str_replaceS(str text, str value, str replacement) {
+char* str_replaceS(char* text, char* value, char* replacement) {
     if (!text || !value || !replacement) return null;
     
     uint32 text_len = _str_len(text);
@@ -109,7 +109,7 @@ str str_replaceS(str text, str value, str replacement) {
     if (count == 0) return str_copy(text);
     
     uint32 new_len = text_len + (count * rep_len) - (count * val_len);
-    str result = (str)malloc(new_len + 1);
+    char* result = (char*)malloc(new_len + 1);
     if (!result) return null;
     
     uint32 text_idx = 0;

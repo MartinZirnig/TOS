@@ -1,7 +1,7 @@
 #ifndef STRING_OPERATIONS_H
 #define STRING_OPERATIONS_H
 
-#include "std.h"
+#include "types.h"
 
 uint32 str_len(char* text);
 char* str_copy(char* text);

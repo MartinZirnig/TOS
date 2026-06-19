@@ -14,8 +14,7 @@ __entry__:
     mov             es, ax
     mov             ss, ax
     mov             sp, STACK_TOP
-    sti
-
+    
     %include "src/bootloader/bootstrap_loader.asm"
 
     %include "src/bootloader/test_cpu.asm"
@@ -25,7 +24,7 @@ __entry__:
     %include "src/bootloader/enable_protected_cpu_mode.asm"
     [bits 32]
 
-    jmp BOOTSTRAP_ADDRESS
+    jmp BOOTSTRAP_JUMP_ADDRESS
 
 ; >> si -> message: char*
 ; << void

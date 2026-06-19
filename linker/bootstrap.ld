@@ -25,8 +25,10 @@ SECTIONS
         *(COMMON)
     }
 
-    /DISCARD/ : {
+/DISCARD/ : {
         *(.comment)
         *(.note.*)
+        *(.eh_frame)    /* TÍMTO VYMAŽEŠ TEN 4KB BALAST */
+        *(.eh_frame_hdr)
     }
 }

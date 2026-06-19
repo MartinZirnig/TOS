@@ -8,9 +8,10 @@ BOOT_MAGIC                  equ 0xAA55
 BOOT_MAGIC_SIZE             equ 0x2
 TOTAL_SIZE                  equ 0x200
 
-BOOTSTRAP_ADDRESS           equ 0x8000
-BOOTSTRAP_SECTOR            equ 0x0000    
-BOOTSTRAP_SIZE              equ 0x64
+BOOTSTRAP_JUMP_ADDRESS      equ 0x8000
+BOOTSTRAP_ADDRESS           equ 0x0000
+BOOTSTRAP_SECTOR            equ 0x0800
+BOOTSTRAP_SIZE              equ 0x40
 
 READ_DISK                   equ 0x42
 

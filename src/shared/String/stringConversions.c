@@ -1,7 +1,6 @@
 #include "stringConversions.h"
-#include "string.h"
+#include "./../Memory/memory.h"
 
-#include "memory.h"
 #define MAX_STR_LEN 22
 
 static inline void _strrev(char* str, uint32 len) {

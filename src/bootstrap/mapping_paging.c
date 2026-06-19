@@ -1,33 +1,15 @@
 #include "bootstrap.h"
 #include "mmap.h"
 #include "paging.h"
-#include "HW_IO.h"
 #include "math.h"
 
 #define MMAP_ADDRESS                        0x0500
-#define LOW_PAGE_META                       PTE_Present | PTE_Writable | PTE_CancelPageCache | PTE_Global
-#define RESERVED_PAGE_META                  PTE_Present | PTE_Writable | PTE_CancelPageCache
-#define KERNEL_PAGE_META                    PTE_Present | PTE_Writable | PTE_CancelPageCache | PTE_Global
-#define GENERAL_PDE_META                    PDE_Present | PDE_Writable | PDE_UseWriteCache | PDE_CancelPageCache | PDE_Global
+#define LOW_PAGE_META                       PTE_Present | PTE_Writable
+#define RESERVED_PAGE_META                  PTE_Present | PTE_Writable
+#define KERNEL_PAGE_META                    PTE_Present | PTE_Writable
+#define GENERAL_PDE_META                    PDE_Present | PDE_Writable
 
-#define MAX_SUPPORTED_MEMORY_SEGMENTS       0xFF
-#define MAX_SUPPORTED_PAGING_TABLES         0x40
-
-
-typedef struct
-{
-    uint64 bot;
-    uint64 top;
-} Range_64;
-
-typedef struct
-{
-    qword PML4;
-    qword maps;
-
-    uint32 rangeCount;
-    Range_64 availableRanges[MAX_SUPPORTED_MEMORY_SEGMENTS];
-} PagingInit_64Bit;
+#define MAX_SUPPORTED_PAGING_TABLES         0x20
 
 
 static volatile PagingInit_64Bit PGI;
@@ -88,7 +70,7 @@ static inline void _initTables() {
     for (uint32 i = 0; i < MAX_SUPPORTED_PAGING_TABLES; i++) {
         safeptr(PagingTable) current = (tables + i);
         
-        fill((void*)current->pages, ENTRIES_PER_TABLE, UINT64_MIN);
+        fill((void*)current->pages, ENTRIES_PER_TABLE * sizeof(PageTableEntry), 0);
     }
 }
 
@@ -131,120 +113,98 @@ static void _throwMemoryAllreadyMappedException() {
 }
 
 
+// Pomocná funkce, která vyčistí CELÝ záznam a nastaví jen to, co chceme (včetně adresy a flagů)
+static inline void _writeTableEntry(safeptr(PageTableEntry) entry, qword physAddr, qword flags) {
+    qword clean_addr = physAddr & ADDR_MASK;
+    qword clean_flags = flags & META_MASK;
+    *entry = clean_addr | clean_flags; // Žádné staré bity nepřežijí, bity 52-63 jsou 0!
+}
+
 static inline void _mapPT(Range_64 range, qword virtualStart, PTE access, safeptr(PagingTable) table) {
-    str msg = uint64ToString((range.top - range.bot) / NORMAL_PAGE_SIZE); 
-    print(msg);
-    free(msg);
-
-    while (range.top - range.bot >= NORMAL_PAGE_SIZE) {
-        word index = (word)((range.bot & BIT64_ADDRESS_PT) >> 12);
-
+    qword vStart = virtualStart;
+    while (range.bot < range.top) {
+        word index = (word)((vStart & BIT64_ADDRESS_PT) >> 12);
         safeptr(PageTableEntry) pte = (table->pages + index);
-        
-        if ((*pte) & PTE_Present) 
-            _throwMemoryAllreadyMappedException();
 
-        Paging_SetMetadataPTE(pte, access | PDE_HugePage);
-        Paging_SetNextAddress(pte, virtualStart);
+        // OPRAVA: Pro 4KB stránky NESMÍ být PDE_HugePage!
+        _writeTableEntry(pte, range.bot, access); 
 
         range.bot += NORMAL_PAGE_SIZE;
-        virtualStart += NORMAL_PAGE_SIZE;
+        vStart += NORMAL_PAGE_SIZE;
     }
 }
 
-static inline void _mapPD(Range_64 range, qword virtualStart, PTE access, safeptr(PagingTable) table) {   
-    printError("pd");
-    
-    while (range.top - range.bot >= HUGE_PAGE_SIZE) {
-        printError("pd__");
-        word index = (word)((range.bot & BIT64_ADDRESS_PD) >> 21);
-
+static inline void _mapPD(Range_64 range, qword virtualStart, PTE access, safeptr(PagingTable) table) {       
+    qword vStart = virtualStart;
+    while (range.bot < range.top) {
+        word index = (word)((vStart & BIT64_ADDRESS_PD) >> 21);
         safeptr(PageTableEntry) pte = (table->pages + index);
-        if ((*pte) & PTE_Present) 
-            _throwMemoryAllreadyMappedException();
-
-        Paging_SetMetadataPTE(pte, access | PDE_HugePage);
-        Paging_SetNextAddress(pte, virtualStart);
-
-        range.bot += HUGE_PAGE_SIZE;
-        virtualStart += HUGE_PAGE_SIZE;
-    }
-
-    if (range.bot < range.top) {
-        word index = (word)((range.bot & BIT64_ADDRESS_PD) >> 21);
-
-        safeptr(PageTableEntry) pte = (table->pages + index);
-        bool isSet = (*pte) & PTE_Present;
         
-        qword nextTableAddress = isSet
-            ? Paging_GetNextAddress(pte)
-            : (qword)(nuint)_addTable();
+        qword vNextBoundary = (vStart & ~(HUGE_PAGE_SIZE - 1)) + HUGE_PAGE_SIZE;
+        qword currentChunkEnd = min(range.top, range.bot + (vNextBoundary - vStart));
+        Range_64 clear = { range.bot, currentChunkEnd };
 
-        _mapPT(range, virtualStart, access, (safeptr(PagingTable))(nuint)nextTableAddress);
-        Paging_SetNextAddress(pte, nextTableAddress);
-        Paging_SetMetadataPDE(pte, GENERAL_PDE_META);
+        // Pokud mapujeme přesně celý 2MB blok a je zarovnaný, můžeme použít 2MB stránku
+        if ((vStart & (HUGE_PAGE_SIZE - 1)) == 0 && (range.bot & (HUGE_PAGE_SIZE - 1)) == 0 && (currentChunkEnd - range.bot) == HUGE_PAGE_SIZE) {
+            _writeTableEntry(pte, range.bot, access | PDE_HugePage); // Tady je HugePage legální
+        } else {
+            // Jinak musíme jít o úroveň níž do PT tabulky
+            bool isSet = (*pte) & PTE_Present;
+            qword nextTableAddress = isSet ? Paging_GetNextAddress(pte) : (qword)(nuint)_addTable();
+            
+            _mapPT(clear, vStart, access, (safeptr(PagingTable))(nuint)nextTableAddress);
+            _writeTableEntry(pte, nextTableAddress, PDE_Present | PDE_Writable); // Mezistupeň! Bez HugePage!
+        }
+
+        qword mapped = currentChunkEnd - range.bot;
+        range.bot += mapped;
+        vStart += mapped;
     }
 }
 
 static inline void _mapPDPT(Range_64 range, qword virtualStart, PTE access, safeptr(PagingTable) table) {
-    printError("pdpt");
-
-    while (range.top - range.bot >= GIANT_PAGE_SIZE) {
-        printError("pdpt__");
+    qword vStart = virtualStart;
+    while (range.bot < range.top) {
+        word index = (word)((vStart & BIT64_ADDRESS_PDPT) >> 30);
+        safeptr(PageTableEntry) pte = (table->pages + index);
         
-        word index = (word)((range.bot & BIT64_ADDRESS_PDPT) >> 30);
-
-        safeptr(PageTableEntry) pte = (table->pages + index);
-        if ((*pte) & PTE_Present) 
-            _throwMemoryAllreadyMappedException();
-
-        Paging_SetMetadataPTE(pte, access | PDE_HugePage);
-        Paging_SetNextAddress(pte, virtualStart);
-
-        range.bot += GIANT_PAGE_SIZE;
-        virtualStart += GIANT_PAGE_SIZE;
-    }
-
-    if (range.bot < range.top) {
-        word index = (word)((range.bot & BIT64_ADDRESS_PDPT) >> 30);
-
-
-        safeptr(PageTableEntry) pte = (table->pages + index);
         bool isSet = (*pte) & PTE_Present;
-        
-        qword nextTableAddress = isSet
-            ? Paging_GetNextAddress(pte)
-            : (qword)(nuint)_addTable();
+        qword nextTableAddress = isSet ? Paging_GetNextAddress(pte) : (qword)(nuint)_addTable();
 
+        qword vNextBoundary = (vStart & ~(GIANT_PAGE_SIZE - 1)) + GIANT_PAGE_SIZE;
+        qword currentChunkEnd = min(range.top, range.bot + (vNextBoundary - vStart));
+        Range_64 clear = { range.bot, currentChunkEnd };
   
-        _mapPD(range, virtualStart, access, (safeptr(PagingTable))(nuint)nextTableAddress);
-        Paging_SetNextAddress(pte, nextTableAddress);
-        Paging_SetMetadataPDE(pte, GENERAL_PDE_META);
+        _mapPD(clear, vStart, access, (safeptr(PagingTable))(nuint)nextTableAddress);
+        
+        _writeTableEntry(pte, nextTableAddress, PDE_Present | PDE_Writable); // Mezistupeň! Bez HugePage!
+    
+        qword mapped = currentChunkEnd - range.bot;
+        range.bot += mapped;
+        vStart += mapped;
     }
 }
 
 static inline void _mapPML4(Range_64 range, qword virtualStart, PTE access) {
-    printError("pml4");
+    qword vStart = virtualStart;
     while (range.bot < range.top) {
-        print(uint64ToString(range.bot));
-
-        word index = (word)((range.bot & BIT64_ADDRESS_PML4) >> 39);
-
+        word index = (word)((vStart & BIT64_ADDRESS_PML4) >> 39);
         safeptr(PageTableEntry) pte = (PML4->pages + index);
-        bool isSet = (*pte) & PTE_Present;
         
-        qword nextTableAddress = isSet
-            ? Paging_GetNextAddress(pte)
-            : (qword)(nuint)_addTable();
+        bool isSet = (*pte) & PTE_Present;
+        qword nextTableAddress = isSet ? Paging_GetNextAddress(pte) : (qword)(nuint)_addTable();
 
-        Range_64 clear = { range.bot, min(range.top, range.bot + PDPT_LIMIT) };
+        qword vNextBoundary = (vStart & ~(PDPT_LIMIT - 1)) + PDPT_LIMIT;
+        qword currentChunkEnd = min(range.top, range.bot + (vNextBoundary - vStart));
+        Range_64 clear = { range.bot, currentChunkEnd };
 
-        _mapPDPT(clear, virtualStart, access, (safeptr(PagingTable))(nuint)nextTableAddress);
-        Paging_SetNextAddress(pte, nextTableAddress);
-        Paging_SetMetadataPDE(pte, GENERAL_PDE_META);
+        _mapPDPT(clear, vStart, access, (safeptr(PagingTable))(nuint)nextTableAddress);
+        
+        _writeTableEntry(pte, nextTableAddress, PDE_Present | PDE_Writable); // Mezistupeň! Bez HugePage!
 
-        range.bot += PDPT_LIMIT;
-        virtualStart += PDPT_LIMIT;
+        qword mapped = currentChunkEnd - range.bot;
+        range.bot += mapped;
+        vStart += mapped;
     }
 }
 
@@ -330,13 +290,17 @@ nuint createPagingTable() {
             _fixKernelMap(range);
             Range_64 splited = { range.bot, range.bot + EXPECTED_KERNEL_SIZE };
             _mapPML4(splited, EXPECTED_KERNEL_ADDRESS, KERNEL_PAGE_META);
+            PGI.kernelPhysical = range.bot;
             
             description = str_concat(description, "  [kernel ");
             description = str_concat(description, _describeRange(splited));
             description = str_concat(description, "]");
+            
             kernelLoaded = true;
         }
 
+        PGI.PML4 = (qword)(nuint)PML4;
+        PGI.maps = (qword)MMAP_ADDRESS;
 
         print(description);
         freeAll();

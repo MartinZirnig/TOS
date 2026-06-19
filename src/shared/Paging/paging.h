@@ -3,7 +3,6 @@
 
 #include "std.h"
 #include "mmap.h"
-#include "memory.h"
 
 #define ENTRIES_PER_TABLE           512ULL
 
@@ -67,6 +66,7 @@ typedef struct __attribute__((aligned(NORMAL_PAGE_SIZE)))
 
 typedef struct 
 {
+    void* kernelPhysical;
     PagingTable* PML4;
     Mmaps* maps;
     
